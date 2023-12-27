@@ -1,0 +1,460 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  MyDBName:
+    Type: String
+    Default: ShareNotes
+  MyDBUser:
+    Type: String
+    Default: root
+  MyDBPassword:
+    Type: String
+    Default: rootroot
+  MyKeyName:
+    Type: String
+    Default: csci-5409
+  MyImageId:
+    Type: String
+    Default: ami-02a89066c48741345
+  MyBucketName:
+    Type: String
+    Default: csci-5409-final-project
+
+Resources:
+  Cloud5409VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/20
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Cloud5409VPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+
+  PublicSubnetBackend:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Cloud5409VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: us-east-2a
+      MapPublicIpOnLaunch: true
+
+  PrivateRDSSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Cloud5409VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: us-east-2a
+
+  PrivateRDSSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Cloud5409VPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: us-east-2b
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Cloud5409VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Cloud5409VPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetBackend
+      RouteTableId: !Ref PublicRouteTable
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  EC2InstanceFE:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.medium
+      KeyName: !Ref MyKeyName
+      ImageId: !Ref MyImageId
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: "true"
+          DeviceIndex: "0"
+          GroupSet:
+            - !Ref EC2SecurityGroupFE
+          SubnetId: !Ref PublicSubnet
+
+  EC2SecurityGroupFE:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH access and HTTP via port 80
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref Cloud5409VPC
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.small
+      KeyName: !Ref MyKeyName
+      ImageId: !Ref MyImageId
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref EC2SecurityGroup
+          DeviceIndex: "0"
+          SubnetId: !Ref PublicSubnetBackend
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH access and HTTP via port 80
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000         
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref Cloud5409VPC
+
+  RDSDBSecuritySubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets available for the RDS DB Instance
+      SubnetIds:
+        - !Ref PrivateRDSSubnet
+        - !Ref PrivateRDSSubnet2
+
+  RDSDBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for RDS DB Instance
+      VpcId: !Ref Cloud5409VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: MyDBInstance
+      AllocatedStorage: "20"
+      DBInstanceClass: db.t3.micro
+      Engine: mysql
+      EngineVersion: "5.7"
+      DBName: !Ref MyDBName
+      MasterUsername: !Ref MyDBUser
+      MasterUserPassword: !Ref MyDBPassword
+      VPCSecurityGroups:
+        - !Ref RDSDBSecurityGroup
+      DBSubnetGroupName: !Ref RDSDBSecuritySubnetGroup
+      PubliclyAccessible: false
+      MultiAZ: false
+      Tags:
+        - Key: Name
+          Value: MyDBInstance
+
+  MyRDSSecretManager:
+    Type: AWS::SecretsManager::Secret
+    DependsOn: MyApi
+    Properties:
+      Name: /MyDB/Host
+      Description: Secret Manager for MyDB
+      SecretString: !GetAtt RDSInstance.Endpoint.Address
+
+  MyRDSSecretManagerUser:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: /MyDB/UserName
+      Description: Secret Manager for MyDB
+      SecretString: !Ref MyDBUser
+
+  MyRDSSecretManagerPassword:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: /MyDB/Password
+      Description: Secret Manager for MyDB
+      SecretString: !Ref MyDBPassword
+
+  MyBackendUrl:
+    Type: AWS::SecretsManager::Secret
+    DependsOn: EC2Instance
+    Properties:
+      Name: /Backend/Url
+      Description: Secret Manager for Frontend
+      SecretString: !Sub http://${EC2Instance.PublicIp}:3000
+
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref MyBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  MyBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MyBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "arn:aws:s3:::${MyBucket}/*"
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !GetAtt LambdaExecutionRole.Arn
+            Action:
+              - "s3:PutObject"
+            Resource: !Sub "arn:aws:s3:::${MyBucket}/*"
+          - Effect: Deny
+            Principal: "*"
+            Action: "s3:DeleteObject"
+            Resource: !Sub "arn:aws:s3:::${MyBucket}/*"
+            Condition:
+              StringNotLike:
+                "aws:userId": "*:lambda.amazonaws.com"
+
+  AttachAWSLambdaBasicExecutionRole:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "AWSLambdaBasicExecutionRole"
+      Roles:
+        - !Ref LambdaExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+            Resource: "arn:aws:logs:*:*:*"
+
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: "LambdaExecutionRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "LambdaExecutionPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:*"
+                  - "textract:*"
+                  - "comprehend:*"
+                Resource: "*"
+
+  MyLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: FileUploadHandler
+      Handler: index.handler
+      Runtime: nodejs14.x
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const crypto = require('crypto');
+          const s3 = new AWS.S3();
+          exports.handler = async (event, context) => {
+
+              console.log("Welcome");
+              const fileContent = Buffer.from(event.body, 'base64');
+
+              const fileName = crypto.randomBytes(16).toString('hex') + '.pdf';
+              console.log("fileName",fileName);
+
+              const s3Params = {
+                  Bucket: 'csci-5409-final-project',
+                  Key: fileName,
+                  Body: fileContent
+              };
+
+              await s3.putObject(s3Params).promise();
+              console.log("file uploaded");
+
+            const result = {
+                  s3Url: `https://${s3Params.Bucket}.s3.amazonaws.com/${s3Params.Key}`,
+                  keywords: "Fix Data"
+              };
+              return {
+                  statusCode: 200,
+                  body: JSON.stringify(result)
+              };
+          }
+
+  MyApi:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: "MyApi"
+      Description: "API Gateway for MyLambdaFunction"
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  LambdaResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref MyApi
+      ParentId: !GetAtt
+        - MyApi
+        - RootResourceId
+      PathPart: "upload"
+
+  LambdaMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId: !Ref MyApi
+      ResourceId: !Ref LambdaResource
+      HttpMethod: "POST"
+      AuthorizationType: "NONE"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MyLambdaFunction.Arn}/invocations"
+
+  LambdaPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref MyLambdaFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MyApi}/*/POST/upload"
+
+  LambdaDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    DependsOn: LambdaMethod
+    Properties:
+      RestApiId: !Ref MyApi
+      Description: "Deployment of API Gateway for MyLambdaFunction"
+      StageName: "prod"
+
+  MyAPISecretManager:
+    Type: AWS::SecretsManager::Secret
+    DependsOn: MyApi
+    Properties:
+      Name: /MyApi/Url
+      Description: API Gateway URL for MyLambdaFunction
+      SecretString: !Sub "https://${MyApi}.execute-api.${AWS::Region}.amazonaws.com/prod/upload"
+
+  BackupVaultRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: BackupVaultRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: backup.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BackupVaultPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - backup:CreateBackupVault
+                  - backup:StartBackupJob
+                Resource: "*"
+
+  MyBackupVault:
+    Type: AWS::Backup::BackupVault
+    Properties:
+      BackupVaultName: mybackupvault
+
+  MyBackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Properties:
+      BackupPlan:
+        BackupPlanName: mybackupplan
+        BackupPlanRule:
+          - RuleName: mybackupplanrule
+            TargetBackupVault: !Ref MyBackupVault
+            ScheduleExpression: cron(1 * * * ? *)
+            StartWindowMinutes: 60
+            CompletionWindowMinutes: 10080
+            Lifecycle:
+              DeleteAfterDays: 30
+
+  MyBackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Properties:
+      BackupPlanId: !Ref MyBackupPlan
+      BackupSelection:
+        SelectionName: mybackupselection
+        IamRoleArn: !GetAtt MyBackupRole.Arn
+        Resources:
+          - !Sub "arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:mydbinstance"
+
+  MyBackupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: MyBackupRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: backup.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: mybackuprolepolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rds:DescribeDBInstances
+                  - rds:ListTagsForResource
+                Resource: "*"
+Outputs:
+  FrontendURL:
+    Description: URL for frontend
+    Value: !Sub http://${EC2InstanceFE.PublicIp}:3000/documents
